@@ -11,3 +11,7 @@ Link a repo: https://github.com/voksDB/EcoLight
 Licenza scelta: GNU General Public License v3.0
 
 Data *indicativa* di presentazione: Febbraio 2026
+
+![diagrama macchina a stati](image.png)
+
+
