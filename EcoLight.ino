@@ -1,4 +1,5 @@
 #include <IRremote.h> 
+#include <TaskScheduler.h>
 
 #define TRANSMITTER_PIN  18 
 #define TESTBUTTON_PIN  27
@@ -14,7 +15,7 @@
 #define CMD_ON        0x00
 #define CMD_OFF       0x01
 
-// stati
+// Stati
 enum Stato {
   IDLE,
   ENTRATA,
@@ -31,18 +32,54 @@ const int LIGHT_THRESHOLD = 1500;
 unsigned long statoStartTime = 0;
 const int TIMEOUT = 1000 * 10; // 10 secondi
 
-// Controllo periodico luminosità
-unsigned long lastLightCheck = 0;
-const int LIGHT_CHECK_INTERVAL = 10000; // ogni 10 secondi
-
-// Cooldown PIR 
+// Cooldown PIR non-blocking
 unsigned long pirCooldownStart = 0;
 const int PIR_COOLDOWN_TIME = 5000; // 5 secondi
 
-// persone nella stanza (parte da 1)
-int persone = 1;   
+// Persone nella stanza (parte da 1)
+int persone = 1;
+
+// Variabili sensori (aggiornate dal task)
+bool motionDetected = false;
+bool doorOpen = false;
+int lightLevel = 0;
+
+// Scheduler
+Scheduler ts;
+
+// Dichiarazioni funzioni per i task
+void handleFSM();
+void readSensors();
+void checkLight();
+
+// Definizione Task
+Task t_FSM (
+    50,              // Macchina a stati ogni 50ms
+    TASK_FOREVER,
+    &handleFSM,
+    &ts,
+    true
+);
+
+Task t_Sensors (
+    100,             // Leggi sensori ogni 100ms
+    TASK_FOREVER,
+    &readSensors,
+    &ts,
+    true
+);
+
+Task t_LightCheck (
+    10000,           // Controlla luce ogni 10s
+    TASK_FOREVER,
+    &checkLight,
+    &ts,
+    true
+);
+
 
 void setup() {
+  
   Serial.begin(115200);
 
   pinMode(GREEN_LED, OUTPUT);
@@ -57,11 +94,13 @@ void setup() {
   
   Serial.print("Luminosità ambiente: "); 
   Serial.println(analogRead(PHOTORESISTOR_PIN)); 
+  
+  
 }
 
 void loop() {
 
-  // Reset manuale 
+  // Reset manuale
   if (digitalRead(TESTBUTTON_PIN) == LOW) {
     persone = 1;
     luceAccesa = true; 
@@ -70,30 +109,37 @@ void loop() {
     checkAndControlLight(); 
     while (digitalRead(TESTBUTTON_PIN) == LOW);
   }
-
-  ////////
-  // LETTURA SENSORI
   
-  bool motionDetected = digitalRead(PIR_PIN);
+  
+  ts.execute();
+}
+
+
+
+
+
+
+// TASK 1: Lettura sensori 
+
+void readSensors() {
+  motionDetected = digitalRead(PIR_PIN);
   digitalWrite(RED_LED, motionDetected);
-
-  bool doorOpen = digitalRead(OBSTACLE_PIN); // LOW = chiusa, HIGH = aperta
-  int lightLevel = analogRead(PHOTORESISTOR_PIN);
-
-  ////////
-  // CONTROLLO DELLO STATO 
   
-  switch (statoCorrente) {
+  doorOpen = digitalRead(OBSTACLE_PIN);
+  lightLevel = analogRead(PHOTORESISTOR_PIN);
+}
 
+
+
+
+// TASK 2: Macchina a stati 
+
+
+void handleFSM() {
+  switch (statoCorrente) {
     case IDLE:
       {
         // Ignora PIR se siamo in cooldown
-        /*
-          dato che il pir module scatta ad ogni variazione di temperaratura, avremo 2 trigger del pir 
-          quando la persona si posiziona davanti e quando esce. (a volte... non sempre accade)
-
-          vogliamo ignorare il trigger dovuto alla discesa di temperatura 
-        */
         bool pirInCooldown = (millis() - pirCooldownStart < PIR_COOLDOWN_TIME);
         bool pirActive = motionDetected && !pirInCooldown;
         
@@ -125,9 +171,9 @@ void loop() {
         persone++;
         Serial.print("Ingresso confermato, persone = ");
         Serial.println(persone);
-        Serial.println("ENTRATA -> ATTESA_CHIUSURA");
         statoCorrente = ATTESA_CHIUSURA;
         checkAndControlLight();
+        Serial.println("ENTRATA -> ATTESA_CHIUSURA");
       }
       else if (millis() - statoStartTime > TIMEOUT || !doorOpen) {
         Serial.println("Timeout ingresso, ENTRATA -> IDLE");
@@ -163,27 +209,33 @@ void loop() {
       } 
       break;
   }
-
-  // Controllo periodico della luce
-  if (millis() - lastLightCheck > LIGHT_CHECK_INTERVAL) {
-    lastLightCheck = millis();
-    checkAndControlLight();
-  }
 }
 
 
+
+
+// task 3: controllo luce periodico 
+void checkLight() {
+  checkAndControlLight();
+}
+
+
+
+
+// logica di controllo della luce  
+
 void checkAndControlLight() {
-  int lightLevel = analogRead(PHOTORESISTOR_PIN);
+  int currentLight = analogRead(PHOTORESISTOR_PIN);
   
   Serial.print("Luminosità: ");
-  Serial.print(lightLevel);
+  Serial.print(currentLight);
   Serial.print(" | Persone: ");
   Serial.println(persone);
 
   // Se la luce non è accesa
   if (!luceAccesa) {
     // Non accendere se la soglia non è superata
-    if (lightLevel < LIGHT_THRESHOLD) {
+    if (currentLight < LIGHT_THRESHOLD) {
       return; 
     } else { 
       if (persone > 0) accendi(); 
@@ -198,6 +250,7 @@ void checkAndControlLight() {
   }
 }
 
+
 void spegni() {
   digitalWrite(GREEN_LED, LOW);
   for (int i = 0; i < 6; i++) {
@@ -206,7 +259,6 @@ void spegni() {
   luceAccesa = false;
   Serial.println("Lampada OFF");
 }
-
 
 void accendi() {
   digitalWrite(GREEN_LED, HIGH);
